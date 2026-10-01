@@ -1,6 +1,7 @@
 import React, {
   Suspense,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -8,11 +9,10 @@ import React, {
 import {
   Canvas,
   useFrame,
+  useThree,
 } from "@react-three/fiber";
 
 import {
-  Environment,
-  OrbitControls,
   useGLTF,
 } from "@react-three/drei";
 
@@ -51,7 +51,7 @@ const slides = [
 ========================================================= */
 
 function BedModel({ rotation, scale }) {
-  const group = useRef();
+  const group = useRef(null);
 
   const { scene } = useGLTF("/models/bed.glb");
 
@@ -66,27 +66,43 @@ function BedModel({ rotation, scale }) {
    Math.PI / 2     = rotate 90 degrees
    -Math.PI / 2    = rotate -90 degrees
    Math.PI         = rotate 180 degrees
-
-   Current:
-   Math.PI
    ========================================================
   */
 
   const baseRotation = Math.PI;
 
+  /*
+   IMPORTANT:
+   Clone the model only when the GLB changes.
+
+   Previously scene.clone() was executed directly inside
+   render, which can create unnecessary objects during
+   React re-renders.
+  */
+
+  const clonedScene = useMemo(() => {
+    return scene.clone(true);
+  }, [scene]);
+
+  /*
+   Set initial rotation only once.
+  */
+
   useEffect(() => {
-    if (group.current) {
-      group.current.rotation.y = baseRotation;
-    }
+    if (!group.current) return;
+
+    group.current.rotation.y =
+      baseRotation + rotation;
   }, []);
 
   /*
    ========================================================
-   SMALL SCROLL ROTATION
+   LIGHTWEIGHT ROTATION
 
-   The slide rotation is deliberately very small so that
-   the bed shows a little side but does NOT rotate around
-   enough to reveal the back.
+   We only keep rendering while the bed is actually
+   moving toward its target rotation.
+
+   This avoids unnecessary GPU work when the slide is idle.
    ========================================================
   */
 
@@ -96,12 +112,28 @@ function BedModel({ rotation, scale }) {
     const targetRotation =
       baseRotation + rotation;
 
+    const currentRotation =
+      group.current.rotation.y;
+
+    const difference =
+      targetRotation - currentRotation;
+
+    /*
+     * Stop updating when rotation is close enough.
+     */
+    if (Math.abs(difference) < 0.001) {
+      group.current.rotation.y =
+        targetRotation;
+
+      return;
+    }
+
     group.current.rotation.y =
       THREE.MathUtils.damp(
-        group.current.rotation.y,
+        currentRotation,
         targetRotation,
-        3,
-        delta
+        4,
+        Math.min(delta, 0.05)
       );
   });
 
@@ -111,7 +143,7 @@ function BedModel({ rotation, scale }) {
       scale={scale}
       position={[0, -0.12, 0]}
     >
-      <primitive object={scene.clone()} />
+      <primitive object={clonedScene} />
     </group>
   );
 }
@@ -137,6 +169,62 @@ function LoadingBed() {
 }
 
 /* =========================================================
+   WEBGL MONITOR
+========================================================= */
+
+function WebGLMonitor() {
+  const { gl } = useThree();
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+
+    const handleContextLost = (event) => {
+      /*
+       * Prevent the browser from immediately discarding
+       * the context while it attempts to restore it.
+       */
+      event.preventDefault();
+
+      console.warn(
+        "WebGL context lost. Waiting for browser recovery..."
+      );
+    };
+
+    const handleContextRestored = () => {
+      console.info(
+        "WebGL context restored."
+      );
+    };
+
+    canvas.addEventListener(
+      "webglcontextlost",
+      handleContextLost,
+      false
+    );
+
+    canvas.addEventListener(
+      "webglcontextrestored",
+      handleContextRestored,
+      false
+    );
+
+    return () => {
+      canvas.removeEventListener(
+        "webglcontextlost",
+        handleContextLost
+      );
+
+      canvas.removeEventListener(
+        "webglcontextrestored",
+        handleContextRestored
+      );
+    };
+  }, [gl]);
+
+  return null;
+}
+
+/* =========================================================
    BED SCENE
 ========================================================= */
 
@@ -148,7 +236,8 @@ function BedScene({ rotation }) {
       const width = window.innerWidth;
 
       /*
-       * Smaller values keep the COMPLETE bed visible.
+       * Keep the bed large enough visually but avoid
+       * unnecessarily huge model scaling.
        */
 
       if (width < 480) {
@@ -158,7 +247,7 @@ function BedScene({ rotation }) {
       } else if (width < 768) {
         setScale(3.65);
       } else if (width < 1024) {
-        setScale(6.30);
+        setScale(3.60);
       } else if (width < 1280) {
         setScale(3.60);
       } else {
@@ -170,7 +259,8 @@ function BedScene({ rotation }) {
 
     window.addEventListener(
       "resize",
-      updateScale
+      updateScale,
+      { passive: true }
     );
 
     return () => {
@@ -181,43 +271,90 @@ function BedScene({ rotation }) {
     };
   }, []);
 
+  /*
+   ========================================================
+   WEBGL CANVAS
+   ========================================================
+  */
+
   return (
     <Canvas
+      frameloop="always"
       camera={{
-        /*
-         * Camera is farther away and has a wider FOV
-         * so the complete bed stays inside the frame.
-         */
         position: [4.4, 2.6, 8.8],
         fov: 44,
         near: 0.1,
         far: 100,
       }}
-      dpr={[1, 2]}
+      dpr={[1, 1.5]}
       gl={{
         antialias: true,
         alpha: true,
+        powerPreference: "high-performance",
+        preserveDrawingBuffer: false,
+        stencil: false,
+        depth: true,
+      }}
+      performance={{
+        min: 0.5,
+        max: 1,
+        debounce: 200,
+      }}
+      onCreated={({ gl }) => {
+        /*
+         * Keep renderer pixel ratio under control.
+         */
+        gl.setPixelRatio(
+          Math.min(
+            window.devicePixelRatio || 1,
+            1.5
+          )
+        );
+
+        gl.outputColorSpace =
+          THREE.SRGBColorSpace;
+
+        gl.toneMapping =
+          THREE.ACESFilmicToneMapping;
+
+        gl.toneMappingExposure = 1;
       }}
     >
       {/* =================================================
-          LIGHTING
+          WEBGL MONITOR
       ================================================= */}
 
-      <ambientLight intensity={1.5} />
+      <WebGLMonitor />
+
+      {/* =================================================
+          LIGHTING
+          
+          Using normal lights instead of an HDR Environment
+          significantly reduces GPU load and makes the scene
+          more reliable on lower-powered/mobile devices.
+      ================================================= */}
+
+      <ambientLight intensity={1.7} />
+
+      <hemisphereLight
+        skyColor="#ffffff"
+        groundColor="#d8d0c3"
+        intensity={1.2}
+      />
 
       <directionalLight
         position={[5, 8, 5]}
-        intensity={3}
+        intensity={2.5}
       />
 
       <directionalLight
         position={[-5, 4, -3]}
-        intensity={1.5}
+        intensity={1.2}
       />
 
       <directionalLight
         position={[2, 5, -6]}
-        intensity={1}
+        intensity={0.8}
       />
 
       {/* =================================================
@@ -229,15 +366,7 @@ function BedScene({ rotation }) {
           rotation={rotation}
           scale={scale}
         />
-
-        <Environment preset="apartment" />
       </Suspense>
-
-      <OrbitControls
-        enableZoom={false}
-        enablePan={false}
-        enableRotate={false}
-      />
     </Canvas>
   );
 }
@@ -267,7 +396,8 @@ export default function Bedding3DSection() {
 
   const changeSlide = (direction) => {
     setActiveIndex((current) => {
-      const next = current + direction;
+      const next =
+        current + direction;
 
       if (next < 0) {
         return 0;
@@ -304,7 +434,8 @@ export default function Bedding3DSection() {
 
     return (
       Math.abs(
-        sectionCenter - viewportCenter
+        sectionCenter -
+          viewportCenter
       ) <
       viewportHeight * 0.45
     );
@@ -325,11 +456,13 @@ export default function Bedding3DSection() {
       }
 
       const direction =
-        event.deltaY > 0 ? 1 : -1;
+        event.deltaY > 0
+          ? 1
+          : -1;
 
       /*
-       * Allow normal page scrolling above the first
-       * slide.
+       * Allow normal page scrolling above
+       * the first slide.
        */
 
       if (
@@ -340,12 +473,13 @@ export default function Bedding3DSection() {
       }
 
       /*
-       * Allow normal page scrolling below the last
-       * slide.
+       * Allow normal page scrolling below
+       * the last slide.
        */
 
       if (
-        activeIndex === slides.length - 1 &&
+        activeIndex ===
+          slides.length - 1 &&
         direction > 0
       ) {
         return;
@@ -398,7 +532,8 @@ export default function Bedding3DSection() {
   ======================================================= */
 
   const handleTouchStart = (event) => {
-    const touch = event.touches[0];
+    const touch =
+      event.touches[0];
 
     touchStartY.current =
       touch.clientY;
@@ -413,8 +548,10 @@ export default function Bedding3DSection() {
 
   const handleTouchEnd = (event) => {
     if (
-      touchStartY.current === null ||
-      touchStartX.current === null
+      touchStartY.current ===
+        null ||
+      touchStartX.current ===
+        null
     ) {
       return;
     }
@@ -422,14 +559,19 @@ export default function Bedding3DSection() {
     const touch =
       event.changedTouches[0];
 
-    const endY = touch.clientY;
-    const endX = touch.clientX;
+    const endY =
+      touch.clientY;
+
+    const endX =
+      touch.clientX;
 
     const deltaY =
-      touchStartY.current - endY;
+      touchStartY.current -
+      endY;
 
     const deltaX =
-      touchStartX.current - endX;
+      touchStartX.current -
+      endX;
 
     touchStartY.current = null;
     touchStartX.current = null;
@@ -449,7 +591,9 @@ export default function Bedding3DSection() {
      * Ignore very small swipes.
      */
 
-    if (Math.abs(deltaY) < 50) {
+    if (
+      Math.abs(deltaY) < 50
+    ) {
       return;
     }
 
@@ -554,8 +698,6 @@ export default function Bedding3DSection() {
               {/* Label */}
 
               <div className="mb-6 flex items-center gap-3">
-                
-
                 <span className="font-sans text-[11px] uppercase tracking-[0.3em] text-[#1d4636]/70 sm:text-xs">
                   Bedding Collection
                 </span>
@@ -601,7 +743,8 @@ export default function Bedding3DSection() {
                     >
                       <div
                         className={`h-[2px] transition-all duration-500 ${
-                          index === activeIndex
+                          index ===
+                          activeIndex
                             ? "w-12 bg-[#1d4636]"
                             : "w-6 bg-[#1d4636]/20"
                         }`}
@@ -609,7 +752,8 @@ export default function Bedding3DSection() {
 
                       <span
                         className={`font-sans text-[10px] tracking-widest transition-opacity duration-300 ${
-                          index === activeIndex
+                          index ===
+                          activeIndex
                             ? "text-[#1d4636] opacity-100"
                             : "text-[#1d4636] opacity-30"
                         }`}
@@ -679,7 +823,7 @@ export default function Bedding3DSection() {
             SIDE SLIDE NUMBER
         ================================================= */}
 
-        <div className="absolute bottom-8 right-5 hidden sm:block lg:right-8 lg:bottom-12">
+        <div className="absolute bottom-8 right-5 hidden sm:block lg:bottom-12 lg:right-8">
           <div className="flex flex-col items-center gap-2">
             <span className="rotate-90 font-sans text-[10px] tracking-widest text-[#1d4636]/30">
               0{activeIndex + 1}
