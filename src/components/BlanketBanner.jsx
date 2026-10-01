@@ -5,7 +5,7 @@ const BlanketBanner = () => {
     <section className="w-full bg-white">
       <div className="w-full aspect-video overflow-hidden">
         <img
-          src="public/assets/images/BlanketBanner.png"
+          src="/assets/images/BlanketBanner.png"
           alt="400 GSM Fleece Blanket - Comfort and Warmth"
           className="w-full h-full object-cover object-center"
         />

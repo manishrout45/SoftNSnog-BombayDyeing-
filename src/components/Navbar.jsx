@@ -31,7 +31,7 @@ const Navbar = () => {
           <div className="flex h-[78px] items-center justify-center">
             <a href="/" aria-label="Bedding Store">
               <img
-                src="public/assets/images/SoftnSnogLogo.png"
+                src="/assets/images/SoftnSnogLogo.png"
                 alt="Bedding Store"
                 className="h-14 w-auto object-contain xl:h-14"
               />
@@ -77,7 +77,7 @@ const Navbar = () => {
               className="flex items-center"
             >
               <img
-                src="public/assets/images/SoftnSnogLogo.png"
+                src="/assets/images/SoftnSnogLogo.png"
                 alt="Bedding Store"
                 className="h-10 w-auto object-contain sm:h-10"
               />
